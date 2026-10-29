@@ -20,10 +20,15 @@
         <span class="folder" id="folder"></span><span id="name"></span>
       </button>
       <div class="inktools" id="inktools" hidden>
-        <span id="swatches"></span>
-        <button class="icon" id="eraser" data-icon="eraser" aria-label="Eraser"></button>
         <button class="icon" id="undo" data-icon="undo" aria-label="Undo"></button>
         <button class="icon" id="redo" data-icon="redo" aria-label="Redo"></button>
+        <span class="divider"></span>
+        <button class="icon" id="tool-pen" aria-label="Pen"></button>
+        <button class="icon" id="tool-highlighter" data-icon="highlighter" aria-label="Highlighter"></button>
+        <button class="icon" id="tool-eraser" data-icon="eraser" aria-label="Eraser"></button>
+        <button class="icon" id="tool-lasso" data-icon="lasso" aria-label="Lasso: select to move, resize, recolor or delete"></button>
+        <span class="group" id="swatches"></span>
+        <span class="group" id="sizes"></span>
       </div>
       <button class="status" id="status" aria-label="Sync status"></button>
       <button class="icon" id="new-ink" data-icon="pen" aria-label="New handwritten note"></button>
@@ -73,6 +78,7 @@
             <option value="text">Text</option>
           </select>
         </label>
+        <label class="check"><input type="checkbox" id="s-snap" /> Draw and hold to snap lines and shapes</label>
         <p class="hint" id="s-msg" role="status"></p>
         <menu>
           <span class="spacer"></span>

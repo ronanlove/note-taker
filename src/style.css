@@ -11,10 +11,6 @@
   --warn: #e3a008;
   --danger: #d93025;
   --accent: #2563eb;
-  /* Ink colors as displayed. Files always store the light-mode colors. */
-  --ink-1: #1a1a1a;
-  --ink-2: #2563eb;
-  --ink-3: #dc2626;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -26,9 +22,6 @@
     --hover: rgb(255 255 255 / 0.07);
     --paper: #1c1c1e;
     --rule: #2a2f37;
-    --ink-1: #ececec;
-    --ink-2: #6f9bff;
-    --ink-3: #ff6b6b;
   }
 }
 
@@ -57,6 +50,8 @@ body {
   color: var(--fg);
   font: 16px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
+  /* No double-tap zoom on buttons. */
+  touch-action: manipulation;
 }
 
 button {
@@ -135,23 +130,36 @@ a {
   font-weight: 400;
 }
 
-.inktools {
+.inktools,
+.group {
   display: flex;
   align-items: center;
 }
 
-#swatches {
-  display: flex;
+.divider,
+#swatches::before {
+  content: '';
+  flex: none;
+  width: 1px;
+  height: 22px;
+  margin: 0 6px;
+  background: var(--line);
 }
 
 .swatch {
-  display: grid;
-  place-items: center;
-  width: 36px;
+  position: relative;
+  width: 34px;
   height: 40px;
 }
 
-.swatch::after {
+.swatch button {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+.swatch button::after {
   content: '';
   width: 18px;
   height: 18px;
@@ -160,18 +168,62 @@ a {
   box-shadow: 0 0 0 2px var(--bg);
 }
 
-.swatch[aria-pressed='true']::after {
+.swatch.chosen button::after {
   box-shadow:
     0 0 0 2px var(--bg),
     0 0 0 3.5px var(--c);
 }
 
-/* On phones the ink tools get their own row. */
-@media (max-width: 560px) {
+/* The chosen color's picker sits over it, so tapping it again opens the picker. */
+.swatch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.swatch.chosen input {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.size {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 40px;
+}
+
+.size::after {
+  content: '';
+  width: var(--d);
+  height: var(--d);
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.6;
+}
+
+.size[aria-pressed='true']::after {
+  background: var(--fg);
+  opacity: 1;
+}
+
+/* On narrow screens the ink tools get their own row, which scrolls sideways if it has to. */
+@media (max-width: 720px) {
   .inktools {
     order: 1;
     flex-basis: 100%;
-    justify-content: center;
+    overflow-x: auto;
+  }
+  .inktools > :first-child {
+    margin-left: auto;
+  }
+  .inktools > :last-child {
+    margin-right: auto;
   }
 }
 
@@ -240,39 +292,37 @@ main {
   font: 17px/1.65 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 }
 
+/* The page handles every touch itself: scrolling, zooming, and telling the Pencil from fingers. */
 .ink {
+  position: relative;
   height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
+  touch-action: none;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
 }
 
-.ink svg {
-  display: block;
+.ink canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  max-width: 62rem;
-  margin: 0 auto;
-  background: var(--paper);
-  touch-action: pan-y;
+  height: 100%;
+}
+
+.ink .surface {
   cursor: crosshair;
 }
 
-.ink .rule {
-  stroke: var(--rule);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
-
-.ink path[fill='#1a1a1a'] {
-  fill: var(--ink-1);
-}
-.ink path[fill='#2563eb'] {
-  fill: var(--ink-2);
-}
-.ink path[fill='#dc2626'] {
-  fill: var(--ink-3);
+.selection-menu {
+  position: absolute;
+  display: flex;
+  padding: 2px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
 }
 
 /* ---------- Drawer */
@@ -417,6 +467,18 @@ select {
   color: var(--fg);
   font: inherit;
   font-size: 16px;
+}
+
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+}
+
+.check input {
+  width: auto;
+  margin: 0;
 }
 
 .hint {

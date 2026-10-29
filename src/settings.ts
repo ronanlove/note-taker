@@ -1,3 +1,4 @@
+import { defaultTools, type InkTools } from './ink';
 import type { Kind } from './notes';
 
 export interface Settings {
@@ -29,6 +30,22 @@ export function loadSettings(): Settings {
 
 export function saveSettings(settings: Settings) {
   localStorage.setItem(KEY, JSON.stringify(settings));
+}
+
+const TOOLS_KEY = 'jot.tools';
+
+export function loadTools(): InkTools {
+  const d = defaultTools();
+  try {
+    const saved = JSON.parse(localStorage.getItem(TOOLS_KEY) ?? '{}');
+    return { ...d, ...saved, pens: { ...d.pens, ...saved.pens }, markers: { ...d.markers, ...saved.markers } };
+  } catch {
+    return d;
+  }
+}
+
+export function saveTools(tools: InkTools) {
+  localStorage.setItem(TOOLS_KEY, JSON.stringify(tools));
 }
 
 export const isConfigured = (s: Settings) => Boolean(s.owner && s.repo && s.token);

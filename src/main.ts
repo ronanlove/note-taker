@@ -1,9 +1,9 @@
 import './style.css';
 import { GitHubRemote } from './github';
 import { icon, type IconName } from './icons';
-import { INK_COLORS, InkEditor } from './ink';
+import { InkEditor, displayColor, type Tool } from './ink';
 import { INBOX, KEEP, basename, conflictPath, dirname, extname, join, kindOf, newNote, stamp, title, type Kind } from './notes';
-import { isConfigured, loadSettings, parseRepo, saveSettings, type Settings } from './settings';
+import { isConfigured, loadSettings, loadTools, parseRepo, saveSettings, saveTools, type Settings } from './settings';
 import { freePath, idbStore, locked, type NoteInfo } from './store';
 import { sync, type SyncResult } from './sync';
 
@@ -11,6 +11,7 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.qu
 
 const store = idbStore();
 let settings = loadSettings();
+const tools = loadTools();
 
 /** The note on screen. A new note is only stored once something is written in it. */
 interface Session {
@@ -37,19 +38,20 @@ const textarea = document.createElement('textarea');
 textarea.className = 'text';
 textarea.placeholder = 'Start typing…';
 textarea.addEventListener('input', edited);
-const ink = new InkEditor(() => {
+const ink = new InkEditor(tools, (changed) => {
   updateInkTools();
-  edited();
+  if (changed) edited();
 });
 $('#editor').append(textarea, ink.el);
 
 function show(next: Session, content: string) {
+  const same = session?.path === next.path;
   session = next;
   const isInk = next.kind === 'ink';
   textarea.hidden = isInk;
   ink.el.hidden = !isInk;
   $('#inktools').hidden = !isInk;
-  if (isInk) ink.load(content);
+  if (isInk) ink.load(content, same);
   else textarea.value = content;
   expanded.add(dirname(next.path));
   renderHeader();
@@ -372,29 +374,92 @@ function toast(message: string) {
 
 // ---------- Ink tools
 
-const COLOR_NAMES = ['Black', 'Blue', 'Red'];
-const swatches = INK_COLORS.map((color, i) => {
-  const b = el('button', 'swatch');
-  b.style.setProperty('--c', `var(--ink-${i + 1})`);
-  b.setAttribute('aria-label', `${COLOR_NAMES[i]} pen`);
+const toolButtons: [Tool, HTMLElement][] = [
+  ['pen', $('#tool-pen')],
+  ['highlighter', $('#tool-highlighter')],
+  ['eraser', $('#tool-eraser')],
+  ['lasso', $('#tool-lasso')],
+];
+for (const [tool, b] of toolButtons) b.onclick = () => pickTool(tool);
+
+/** The colors and sizes on show: the highlighter's, or the pen's. */
+const palette = () => (tools.tool === 'highlighter' ? tools.markers : tools.pens);
+
+function pickTool(tool: Tool) {
+  // Tapping the pen again switches between fountain pen and ballpoint.
+  if (tool === 'pen' && tools.tool === 'pen') {
+    tools.pen = tools.pen === 'fountain' ? 'ballpoint' : 'fountain';
+    toast(tools.pen === 'fountain' ? 'Fountain pen: line width follows pressure' : 'Ballpoint pen: even line width');
+  }
+  ink.setTool(tool);
+  toolsChanged();
+}
+
+function toolsChanged() {
+  saveTools(tools);
+  updateInkTools();
+}
+
+const swatches = [0, 1, 2].map((i) => {
+  const wrap = el('span', 'swatch');
+  const button = el('button');
+  // Tapping the chosen color again opens a picker to change it.
+  const picker = el('input');
+  picker.type = 'color';
+  picker.tabIndex = -1;
+  picker.setAttribute('aria-label', 'Change this color');
+  picker.oninput = () => {
+    palette().colors[i] = picker.value;
+    toolsChanged();
+  };
+  button.onclick = () => {
+    if (tools.tool === 'lasso') return ink.recolor(tools.pens.colors[i]);
+    palette().color = i;
+    toolsChanged();
+  };
+  wrap.append(button, picker);
+  return { wrap, button, picker };
+});
+$('#swatches').append(...swatches.map((s) => s.wrap));
+
+const sizes = ['Thin', 'Medium', 'Thick'].map((label, i) => {
+  const b = el('button', 'size');
+  b.style.setProperty('--d', `${4 + i * 3.5}px`);
+  b.setAttribute('aria-label', label);
   b.onclick = () => {
-    ink.tool = 'pen';
-    ink.color = color;
-    updateInkTools();
+    palette().size = i;
+    toolsChanged();
   };
   return b;
 });
-$('#swatches').append(...swatches);
-$('#eraser').onclick = () => {
-  ink.tool = ink.tool === 'eraser' ? 'pen' : 'eraser';
-  updateInkTools();
-};
+$('#sizes').append(...sizes);
+
 $('#undo').onclick = () => ink.undo();
 $('#redo').onclick = () => ink.redo();
 
+const dark = matchMedia('(prefers-color-scheme: dark)');
+dark.addEventListener('change', updateInkTools);
+
 function updateInkTools() {
-  swatches.forEach((b, i) => b.setAttribute('aria-pressed', String(ink.tool === 'pen' && ink.color === INK_COLORS[i])));
-  $('#eraser').setAttribute('aria-pressed', String(ink.tool === 'eraser'));
+  const tool = tools.tool;
+  for (const [name, b] of toolButtons) b.setAttribute('aria-pressed', String(name === tool));
+  const pen = $('#tool-pen');
+  pen.innerHTML = icon(tools.pen);
+  pen.setAttribute('aria-label', tools.pen === 'fountain' ? 'Fountain pen' : 'Ballpoint pen');
+  // With a selection, the lasso shows the pen colors to recolor it with.
+  const drawing = tool === 'pen' || tool === 'highlighter';
+  $('#swatches').hidden = !drawing && !(tool === 'lasso' && ink.hasSelection);
+  $('#sizes').hidden = !drawing;
+  const p = palette();
+  swatches.forEach(({ wrap, button, picker }, i) => {
+    const chosen = drawing && p.color === i;
+    wrap.style.setProperty('--c', displayColor(p.colors[i], dark.matches));
+    wrap.classList.toggle('chosen', chosen);
+    picker.value = p.colors[i];
+    button.setAttribute('aria-pressed', String(chosen));
+    button.setAttribute('aria-label', tool === 'lasso' ? `Recolor selection with color ${i + 1}` : `Color ${i + 1}`);
+  });
+  sizes.forEach((b, i) => b.setAttribute('aria-pressed', String(drawing && p.size === i)));
   $<HTMLButtonElement>('#undo').disabled = !ink.canUndo;
   $<HTMLButtonElement>('#redo').disabled = !ink.canRedo;
 }
@@ -442,6 +507,7 @@ function openSettings() {
   $<HTMLInputElement>('#s-branch').value = settings.branch;
   $<HTMLInputElement>('#s-token').value = settings.token;
   $<HTMLSelectElement>('#s-capture').value = settings.capture;
+  $<HTMLInputElement>('#s-snap').checked = tools.snap;
   $('#s-msg').textContent = '';
   closeDrawer();
   settingsDialog.showModal();
@@ -449,6 +515,8 @@ function openSettings() {
 
 $('#settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  tools.snap = $<HTMLInputElement>('#s-snap').checked;
+  saveTools(tools);
   const msg = $('#s-msg');
   const repoInput = $<HTMLInputElement>('#s-repo').value;
   const repo = parseRepo(repoInput);
@@ -497,7 +565,13 @@ $('#status').onclick = () => {
 };
 
 document.addEventListener('keydown', (e) => {
-  if (session.kind !== 'ink' || !(e.metaKey || e.ctrlKey) || document.querySelector('dialog[open]')) return;
+  if (session.kind !== 'ink' || document.querySelector('dialog[open]')) return;
+  if (ink.hasSelection && (e.key === 'Delete' || e.key === 'Backspace')) {
+    e.preventDefault();
+    return ink.deleteSelection();
+  }
+  if (e.key === 'Escape') return ink.clearSelection();
+  if (!(e.metaKey || e.ctrlKey)) return;
   const key = e.key.toLowerCase();
   if (key !== 'z' && key !== 'y') return;
   e.preventDefault();

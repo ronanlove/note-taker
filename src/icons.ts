@@ -10,6 +10,13 @@ const paths = {
   folder:
     '<path d="M12 10v6M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  // Writing tools are drawn upright, then tilted like a held pen.
+  fountain: '<g transform="rotate(45 12 12)"><path d="M9 3h6l2.5 7.5L12 21l-5.5-10.5Z"/><circle cx="12" cy="11" r="1.4"/><path d="M12 12.5V21"/></g>',
+  ballpoint: '<g transform="rotate(45 12 12)"><path d="M9.5 2h5v12L12 19l-2.5-5Z"/><path d="M9.5 14h5M12 19v2.5"/></g>',
+  highlighter: '<g transform="rotate(45 12 12)"><path d="M8.5 2h7v10l-1 3h-5l-1-3Z"/><path d="M8.5 12h7M9.5 15v4.5l5-2V15"/></g>',
+  lasso:
+    '<path d="M7.5 17.2C4.3 16 2 13.7 2 11c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8c-.9 0-1.8-.1-2.6-.3"/><circle cx="7" cy="18" r="1.8"/><path d="M7 19.8c0 1.2-.6 1.9-1.6 2.2"/>',
+  trash: '<path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13"/>',
 };
 
 export type IconName = keyof typeof paths;
