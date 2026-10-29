@@ -11,6 +11,8 @@
     "icons": "node scripts/icons.mjs"
   },
   "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299",
     "perfect-freehand": "^1.2.3"
   },
   "devDependencies": {

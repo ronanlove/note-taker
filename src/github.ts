@@ -1,3 +1,5 @@
+import { fromBase64, toBase64 } from './base64';
+import { isBinary } from './notes';
 import { StaleHeadError, type Change, type Remote, type RemoteFile } from './sync';
 
 export interface GitHubConfig {
@@ -56,24 +58,28 @@ export class GitHubRemote implements Remote {
     return tree.tree.filter((e) => e.type === 'blob').map(({ path, sha }) => ({ path, sha }));
   }
 
-  async read(sha: string): Promise<string> {
+  async read(sha: string, binary: boolean): Promise<string> {
     const blob = await this.api<{ content: string; encoding: string }>('GET', `/git/blobs/${sha}`);
-    if (blob.encoding !== 'base64') return blob.content;
-    const binary = atob(blob.content.replace(/\s/g, ''));
-    return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+    if (blob.encoding !== 'base64') return binary ? toBase64(new TextEncoder().encode(blob.content)) : blob.content;
+    const base64 = blob.content.replace(/\s/g, '');
+    return binary ? base64 : new TextDecoder().decode(fromBase64(base64));
   }
 
   async commit(parent: string | null, changes: Change[], message: string): Promise<string> {
     parent ??= await this.init();
     const base = await this.api<{ tree: { sha: string } }>('GET', `/git/commits/${parent}`);
+    // Text goes inline in the tree. Binary files can't, so they're uploaded as blobs first.
+    const entries = await Promise.all(
+      changes.map(async ({ path, content }) => {
+        if (content === null) return { path, sha: null };
+        if (!isBinary(path)) return { path, content };
+        const blob = await this.api<{ sha: string }>('POST', '/git/blobs', { content, encoding: 'base64' });
+        return { path, sha: blob.sha };
+      }),
+    );
     const tree = await this.api<{ sha: string }>('POST', '/git/trees', {
       base_tree: base.tree.sha,
-      tree: changes.map(({ path, content }) => ({
-        path,
-        mode: '100644',
-        type: 'blob',
-        ...(content === null ? { sha: null } : { content }),
-      })),
+      tree: entries.map((entry) => ({ mode: '100644', type: 'blob', ...entry })),
     });
     const commit = await this.api<{ sha: string }>('POST', '/git/commits', {
       message,

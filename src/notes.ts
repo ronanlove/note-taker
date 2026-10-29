@@ -16,6 +16,8 @@ export type Kind = 'text' | 'ink';
 export const INBOX = 'inbox';
 /** Placeholder file that keeps an empty folder in git. */
 export const KEEP = '.keep';
+/** Photos and PDFs used by handwritten notes, named by their content so each is stored once. */
+export const ATTACHMENTS = 'attachments';
 
 export const dirname = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf('/')));
 export const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1);
@@ -36,12 +38,23 @@ export function title(path: string): string {
 
 export const kindOf = (path: string): Kind => (extname(path).toLowerCase() === 'svg' ? 'ink' : 'text');
 
-/** Files the app manages: Markdown, text and ink notes, plus folder placeholders. Dot-folders like .github are skipped. */
+/** Binary files, kept as base64 text on the device. */
+export const isBinary = (path: string) => /\.(pdf|png|jpe?g|webp|gif)$/i.test(path);
+
+export const isAttachment = (path: string) => path.startsWith(`${ATTACHMENTS}/`);
+
+/**
+ * Files the app manages: Markdown, text and ink notes, folder placeholders, and the photos and PDFs in attachments/.
+ * Dot-folders like .github are skipped.
+ */
 export function isNotePath(path: string): boolean {
   const parts = path.split('/');
   const name = parts.pop()!;
   if (parts.some((p) => p.startsWith('.'))) return false;
-  return name === KEEP || (!name.startsWith('.') && /\.(md|txt|svg)$/i.test(name));
+  if (name === KEEP) return true;
+  if (name.startsWith('.')) return false;
+  if (isAttachment(path)) return parts.length === 1 && isBinary(name);
+  return /\.(md|txt|svg)$/i.test(name);
 }
 
 export function stamp(d: Date): string {

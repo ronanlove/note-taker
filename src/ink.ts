@@ -1,5 +1,6 @@
 import { TouchGestures } from './gestures';
 import { icon } from './icons';
+import type { PdfView } from './pdf';
 import { line, recognize, type Shape, type XY } from './shapes';
 import {
   HIGHLIGHT,
@@ -12,11 +13,16 @@ import {
   makeStroke,
   outline,
   overlaps,
+  picture,
   toSvg,
   transformed,
   union,
   type Box,
   type Brush,
+  type Item,
+  type Page,
+  type Paper,
+  type Picture,
   type Point,
   type Stroke,
 } from './strokes';
@@ -38,6 +44,17 @@ export interface InkTools {
   markers: Palette;
   /** Drawing a shape and holding the pen still snaps it to a clean line, ellipse or polygon. */
   snap: boolean;
+  /** Paper for new notes: the last one picked. */
+  paper: Paper;
+}
+
+/** What the editor needs from the app around it. */
+export interface InkHost {
+  /** Runs after each edit, and with `edited` false when only the selection changed. */
+  changed(edited: boolean): void;
+  /** Reads a photo or PDF from attachments/, or null if it isn't on this device yet. */
+  file(path: string): Promise<Uint8Array<ArrayBuffer> | null>;
+  problem(message: string): void;
 }
 
 const PEN_SIZES = [3, 4.5, 7];
@@ -49,6 +66,7 @@ export const defaultTools = (): InkTools => ({
   pens: { colors: ['#1a1a1a', '#2563eb', '#dc2626'], color: 0, size: 1 },
   markers: { colors: ['#facc15', '#4ade80', '#f472b6'], color: 0, size: 1 },
   snap: true,
+  paper: 'lined',
 });
 
 /** Widest the page gets at 100% zoom, in CSS pixels. */
@@ -62,10 +80,12 @@ const SELECT_PAD = 8;
 const HANDLE = 22;
 /** How long to hold the pen still to snap what you drew to a shape. */
 const HOLD_TIME = 500;
+/** PDF pages are white, so a note written on a PDF keeps light paper and true ink colors in dark mode. */
+const LIGHT = { paper: '#ffffff', rule: '#e6ebf2', dot: '#c5ccd6' };
 
 interface Change {
-  added: Stroke[];
-  removed: Stroke[];
+  added: Item[];
+  removed: Item[];
 }
 
 /** What the pen is laying down. */
@@ -86,13 +106,13 @@ interface Drag {
 }
 
 /**
- * A lined page you write on with Apple Pencil (or a mouse), drawn sharp at any zoom.
+ * A page you write on with Apple Pencil (or a mouse), drawn sharp at any zoom, optionally over a PDF and with photos.
  * The pen writes; fingers scroll, pinch to zoom, and tap with two or three fingers to undo or redo.
  * Notes are saved as plain SVG, so they also show up as images on GitHub.
  */
 export class InkEditor {
   readonly el = document.createElement('div');
-  /** The page and the finished strokes. */
+  /** The page and everything finished on it. */
   private base = document.createElement('canvas');
   /** What's in motion: the stroke being drawn, the lasso, the selection. Takes all input. */
   private top = document.createElement('canvas');
@@ -101,12 +121,18 @@ export class InkEditor {
   private menu = document.createElement('div');
   private gestures: TouchGestures;
 
-  private strokes: Stroke[] = [];
+  private items: Item[] = [];
   private paths = new WeakMap<Stroke, Path2D>();
   private undos: Change[] = [];
   private redos: Change[] = [];
   /** The lowest the writing has reached. Erasing doesn't shrink the page out from under you. */
   private reach = 0;
+  private paper: Paper = 'lined';
+  private pdf: string | null = null;
+  private pdfView: PdfView | null = null;
+  /** Bumped on every load, so a PDF that finishes opening after you've moved on is dropped. */
+  private loads = 0;
+  private images = new Map<string, ImageBitmap | 'loading' | 'missing'>();
 
   // The page is `zoom` times as wide as fits the screen, scrolled so (x, y) is at the top left.
   private zoom = 1;
@@ -116,7 +142,7 @@ export class InkEditor {
   private h = 0;
   private rect = new DOMRect();
   private dark = matchMedia('(prefers-color-scheme: dark)');
-  private theme: Record<'bg' | 'paper' | 'rule' | 'muted' | 'accent', string> | null = null;
+  private theme: Record<'bg' | 'paper' | 'rule' | 'dot' | 'muted' | 'accent', string> | null = null;
   private shades = new Map<string, string>();
 
   // What the pen (or mouse, or a finger dragging a selection) is doing.
@@ -132,17 +158,16 @@ export class InkEditor {
   private erased: Set<Stroke> | null = null;
   private cursor: XY | null = null;
   private lasso: number[] | null = null;
-  private selection: Stroke[] = [];
+  private selection: Item[] = [];
   private selBox: Box = [0, 0, 0, 0];
   private drag: Drag | null = null;
 
   private frame = 0;
   private dirtyBase = false;
 
-  /** `onChange(edited)` runs after each edit, and with `edited` false when only the selection changed. */
   constructor(
     private tools: InkTools,
-    private onChange: (edited: boolean) => void,
+    private host: InkHost,
   ) {
     this.el.className = 'ink';
     this.top.className = 'surface';
@@ -178,7 +203,7 @@ export class InkEditor {
   }
 
   get empty() {
-    return this.strokes.length === 0;
+    return this.items.length === 0;
   }
   /** A stroke is in progress. */
   get busy() {
@@ -193,15 +218,40 @@ export class InkEditor {
   get hasSelection() {
     return this.selection.length > 0;
   }
+  get currentPaper() {
+    return this.paper;
+  }
+  get hasPdf() {
+    return this.pdf !== null;
+  }
 
   /** Shows a note. `keepView` keeps the zoom and scroll, for when the same note changed on another device. */
   load(svg: string, keepView = false) {
     this.cancel();
-    this.strokes = fromSvg(svg);
+    const page = fromSvg(svg);
+    this.items = page.items;
+    this.paper = svg.trim() ? page.paper : this.tools.paper;
     this.undos = [];
     this.redos = [];
     this.selection = [];
     this.reach = 0;
+    this.theme = null;
+    this.shades.clear();
+    // Let go of photos this note doesn't use.
+    const used = new Set(this.items.map((i) => (i.type === 'picture' ? i.src : '')));
+    for (const [src, image] of this.images) {
+      if (used.has(src)) continue;
+      if (image instanceof ImageBitmap) image.close();
+      this.images.delete(src);
+    }
+    if (page.pdf !== this.pdf || !this.pdfView) {
+      this.pdfView?.destroy();
+      this.pdfView = null;
+      delete this.el.dataset.pdfPages;
+      this.pdf = page.pdf;
+      this.loads++;
+      if (this.pdf) void this.openPdf(this.pdf);
+    }
     if (!keepView) {
       this.zoom = 1;
       this.y = 0;
@@ -211,13 +261,49 @@ export class InkEditor {
   }
 
   serialize(): string {
-    const bottom = this.strokes.reduce((max, s) => Math.max(max, s.box[3]), 0);
-    return toSvg(this.strokes, Math.ceil(Math.max(bottom + LINE_GAP, 2 * LINE_GAP)));
+    const bottom = this.items.reduce((max, i) => Math.max(max, i.box[3]), 0);
+    return toSvg(this.page(), Math.ceil(Math.max(bottom + LINE_GAP, 2 * LINE_GAP, this.pdfView?.height ?? 0)));
+  }
+
+  /** The note's contents, for exporting. */
+  page(): Page {
+    return { paper: this.paper, pdf: this.pdf, items: this.items };
   }
 
   setTool(tool: Tool) {
     this.tools.tool = tool;
     this.select([]);
+  }
+
+  setPaper(paper: Paper) {
+    if (paper === this.paper) return;
+    this.paper = paper;
+    this.invalidate();
+    this.host.changed(true);
+  }
+
+  /** Puts a photo in the middle of the screen, selected so it can be moved and resized straight away. */
+  insertPicture(src: string, width: number, height: number) {
+    const s = this.scale;
+    const left = Math.max(this.x, 0);
+    const right = Math.min(this.x + this.w / s, PAGE_WIDTH);
+    let w = Math.min(PAGE_WIDTH * 0.6, (right - left) * 0.8);
+    let h = (w * height) / width;
+    const most = (this.h / s) * 0.7;
+    if (h > most) [w, h] = [(most * width) / height, most];
+    const cx = (left + right) / 2;
+    const cy = this.y + this.h / s / 2;
+    const item = picture(src, [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]);
+    this.commit({ added: [item], removed: [] });
+    this.tools.tool = 'lasso';
+    this.select([item]);
+  }
+
+  /** Tries again to show photos or a PDF that weren't on this device yet. */
+  reloadFiles() {
+    for (const [src, image] of this.images) if (image === 'missing') this.images.delete(src);
+    if (this.pdf && !this.pdfView) void this.openPdf(this.pdf);
+    this.invalidate();
   }
 
   undo() {
@@ -226,7 +312,7 @@ export class InkEditor {
     this.select([]);
     this.apply(change.removed, change.added);
     this.redos.push(change);
-    this.onChange(true);
+    this.host.changed(true);
   }
 
   redo() {
@@ -235,15 +321,16 @@ export class InkEditor {
     this.select([]);
     this.apply(change.added, change.removed);
     this.undos.push(change);
-    this.onChange(true);
+    this.host.changed(true);
   }
 
+  /** Recolors the selected writing. Photos keep their colors. */
   recolor(color: string) {
-    const old = this.selection;
+    const old = this.selection.filter((i) => i.type === 'stroke');
     if (!old.length) return;
     const next = old.map((s) => makeStroke(color, s.d, s.opacity));
     this.commit({ added: next, removed: old });
-    this.select(next);
+    this.select([...this.selection.filter((i) => i.type === 'picture'), ...next]);
   }
 
   deleteSelection() {
@@ -361,7 +448,7 @@ export class InkEditor {
       const { k, tx, ty } = this.drag;
       this.drag = null;
       if (k !== 1 || tx || ty) {
-        const moved = this.selection.map((s) => transformed(s, k, tx, ty));
+        const moved = this.selection.map((i) => transformed(i, k, tx, ty));
         this.commit({ added: moved, removed: this.selection });
         this.select(moved);
       }
@@ -369,7 +456,12 @@ export class InkEditor {
       const lasso = this.lasso;
       this.lasso = null;
       const area = boxOf(lasso);
-      this.select(lasso.length >= 6 ? this.strokes.filter((s) => overlaps(s.box, area) && lassoed(s, lasso)) : []);
+      if ((area[2] - area[0] + (area[3] - area[1])) * this.scale < 12) {
+        // A tap selects the photo under it.
+        const [x, y] = lasso;
+        const hit = [...this.items].reverse().find((i) => i.type === 'picture' && overlaps(i.box, [x, y, x, y]));
+        this.select(hit ? [hit] : []);
+      } else this.select(this.items.filter((i) => overlaps(i.box, area) && lassoed(i, lasso)));
     } else if (this.erased) {
       const removed = [...this.erased];
       this.erased = null;
@@ -447,10 +539,11 @@ export class InkEditor {
     return erased;
   }
 
+  /** Erases writing under (x, y). Photos stay: they're removed with the lasso. */
   private erase([x, y]: XY): boolean {
     let erased = false;
-    for (const s of this.strokes) {
-      if (!this.erased!.has(s) && hits(s, x, y, ERASER / this.scale)) {
+    for (const s of this.items) {
+      if (s.type === 'stroke' && !this.erased!.has(s) && hits(s, x, y, ERASER / this.scale)) {
         this.erased!.add(s);
         erased = true;
       }
@@ -483,12 +576,12 @@ export class InkEditor {
     d.ty = y0 * (1 - d.k);
   }
 
-  private select(strokes: Stroke[]) {
-    if (!strokes.length && !this.selection.length) return;
-    this.selection = strokes;
-    this.selBox = union(strokes.map((s) => s.box));
+  private select(items: Item[]) {
+    if (!items.length && !this.selection.length) return;
+    this.selection = items;
+    this.selBox = union(items.map((i) => i.box));
     this.invalidate();
-    this.onChange(false);
+    this.host.changed(false);
   }
 
   // ---------- Edits
@@ -497,19 +590,60 @@ export class InkEditor {
     this.apply(change.added, change.removed);
     this.undos.push(change);
     this.redos = [];
-    this.onChange(true);
+    this.host.changed(true);
   }
 
-  private apply(added: Stroke[], removed: Stroke[]) {
+  private apply(added: Item[], removed: Item[]) {
     const gone = new Set(removed);
-    this.strokes = this.strokes.filter((s) => !gone.has(s)).concat(added);
+    this.items = this.items.filter((i) => !gone.has(i)).concat(added);
     this.updated();
   }
 
   private updated() {
-    this.reach = this.strokes.reduce((max, s) => Math.max(max, s.box[3]), this.reach);
-    this.el.dataset.strokes = String(this.strokes.length);
+    this.reach = this.items.reduce((max, i) => Math.max(max, i.box[3]), this.reach);
+    this.el.dataset.items = String(this.items.length);
     this.clamp();
+    this.invalidate();
+  }
+
+  private async openPdf(src: string) {
+    const load = this.loads;
+    try {
+      const bytes = await this.host.file(src);
+      if (!bytes) return; // Not synced to this device yet: reloadFiles tries again after the next sync.
+      const { PdfView } = await import('./pdf');
+      const view = await PdfView.open(bytes, () => this.invalidate());
+      if (load !== this.loads) return view.destroy();
+      this.pdfView = view;
+      this.el.dataset.pdfPages = String(view.pages.length);
+      this.updated();
+    } catch (e) {
+      if (load === this.loads) this.host.problem(`Couldn’t open this PDF: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  /** The photo, or null while it loads or if it isn't on this device yet. */
+  private image(src: string): ImageBitmap | null {
+    const image = this.images.get(src);
+    if (image instanceof ImageBitmap) return image;
+    if (!image) {
+      this.images.set(src, 'loading');
+      void this.loadImage(src);
+    }
+    return null;
+  }
+
+  private async loadImage(src: string) {
+    let image: ImageBitmap | 'missing' = 'missing';
+    try {
+      const bytes = await this.host.file(src);
+      if (bytes) image = await createImageBitmap(new Blob([bytes]));
+    } catch {
+      // Unreadable: shows as a placeholder.
+    }
+    // The note may have changed while it loaded.
+    if (this.images.get(src) === 'loading') this.images.set(src, image);
+    else if (image instanceof ImageBitmap) image.close();
     this.invalidate();
   }
 
@@ -524,10 +658,11 @@ export class InkEditor {
     return this.fit * this.zoom;
   }
 
-  /** The page always reaches 3/4 of a screen below the writing, so there's room to keep going. */
+  /** The page always reaches 3/4 of a screen below the writing, and past the PDF, so there's room to keep going. */
   private pageHeight() {
     const screen = this.h / this.fit;
-    return Math.max(screen, this.reach + screen * 0.75);
+    const pdf = this.pdfView ? this.pdfView.height + screen / 2 : 0;
+    return Math.max(screen, this.reach + screen * 0.75, pdf);
   }
 
   private measure() {
@@ -594,27 +729,66 @@ export class InkEditor {
     const ctx = this.baseCtx;
     const theme = this.colors();
     const s = this.scale;
+    const view: Box = [this.x, this.y, this.x + this.w / s, this.y + this.h / s];
+    const height = this.pageHeight();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, this.w, this.h);
-    const left = -this.x * s;
-    const width = PAGE_WIDTH * s;
-    const height = this.pageHeight();
     ctx.fillStyle = theme.paper;
-    ctx.fillRect(left, -this.y * s, width, height * s);
-    // Rules stay one CSS pixel thick, lined up with device pixels, at any zoom.
-    ctx.fillStyle = theme.rule;
-    const bottom = Math.min(height, this.y + this.h / s);
-    for (let i = Math.max(1, Math.ceil(this.y / LINE_GAP)); i * LINE_GAP <= bottom; i++) {
-      ctx.fillRect(left, Math.round((i * LINE_GAP - this.y) * s * dpr) / dpr, width, 1);
+    ctx.fillRect(-this.x * s, -this.y * s, PAGE_WIDTH * s, height * s);
+
+    // A PDF's pages come first, with the background showing between them; the paper continues below.
+    let paperTop = 0;
+    if (this.pdfView) {
+      paperTop = this.pdfView.height + LINE_GAP / 2;
+      ctx.fillStyle = theme.bg;
+      ctx.fillRect(-this.x * s, -this.y * s, PAGE_WIDTH * s, this.pdfView.height * s);
+    } else if (this.pdf) {
+      ctx.fillStyle = theme.muted;
+      ctx.font = '15px -apple-system, system-ui, sans-serif';
+      ctx.fillText('Opening PDF…', (24 - this.x) * s, (40 - this.y) * s);
     }
+    this.drawPaper(ctx, dpr, theme, Math.max(paperTop, view[1]), Math.min(height, view[3]));
+
     ctx.setTransform(dpr * s, 0, 0, dpr * s, -dpr * s * this.x, -dpr * s * this.y);
-    const view: Box = [this.x, this.y, this.x + this.w / s, this.y + this.h / s];
-    const skip = new Set([...this.selection, ...(this.erased ?? [])]);
+    this.pdfView?.draw(ctx, view, dpr * s);
+    const skip = new Set<Item>([...this.selection, ...(this.erased ?? [])]);
     this.fill(
       ctx,
-      this.strokes.filter((st) => !skip.has(st) && overlaps(st.box, view)),
+      this.items.filter((i) => !skip.has(i) && overlaps(i.box, view)),
     );
+  }
+
+  /** Lines, a grid or dots between page heights y0 and y1, kept crisp on device pixels at any zoom. */
+  private drawPaper(ctx: CanvasRenderingContext2D, dpr: number, theme: { rule: string; dot: string }, y0: number, y1: number) {
+    if (this.paper === 'blank' || y1 <= y0) return;
+    const s = this.scale;
+    const snap = (v: number) => Math.round(v * dpr) / dpr;
+    const left = -this.x * s;
+    const first = Math.max(1, Math.ceil(y0 / LINE_GAP));
+    const last = Math.floor(y1 / LINE_GAP);
+    if (this.paper === 'dotted') {
+      // Dots grow a little as you zoom in, like a real page.
+      const r = Math.min(3, Math.max(1, 1.2 * s));
+      ctx.fillStyle = theme.dot;
+      ctx.beginPath();
+      for (let j = first; j <= last; j++) {
+        for (let i = 1; i < PAGE_WIDTH / LINE_GAP; i++) {
+          const x = left + i * LINE_GAP * s;
+          if (x < -r || x > this.w + r) continue;
+          ctx.moveTo(x + r, (j * LINE_GAP - this.y) * s);
+          ctx.arc(x, (j * LINE_GAP - this.y) * s, r, 0, 2 * Math.PI);
+        }
+      }
+      ctx.fill();
+      return;
+    }
+    ctx.fillStyle = theme.rule;
+    for (let j = first; j <= last; j++) ctx.fillRect(left, snap((j * LINE_GAP - this.y) * s), PAGE_WIDTH * s, 1);
+    if (this.paper === 'grid') {
+      const top = snap((y0 - this.y) * s);
+      for (let i = 1; i < PAGE_WIDTH / LINE_GAP; i++) ctx.fillRect(snap(left + i * LINE_GAP * s), top, 1, (y1 - y0) * s);
+    }
   }
 
   private renderTop(dpr: number) {
@@ -623,7 +797,7 @@ export class InkEditor {
     const s = this.scale;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.top.width, this.top.height);
-    // Page units to device pixels, with strokes scaled by k and moved by (tx, ty).
+    // Page units to device pixels, with items scaled by k and moved by (tx, ty).
     const page = (k = 1, tx = 0, ty = 0) =>
       ctx.setTransform(dpr * s * k, 0, 0, dpr * s * k, dpr * s * (tx - this.x), dpr * s * (ty - this.y));
     const screen = () => ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -693,11 +867,21 @@ export class InkEditor {
     }
   }
 
-  /** Fills strokes, highlighter first so it sits under the ink. */
-  private fill(ctx: CanvasRenderingContext2D, strokes: Stroke[]) {
+  /** Draws items: photos, then highlighter, then ink on top. */
+  private fill(ctx: CanvasRenderingContext2D, items: Item[]) {
+    ctx.imageSmoothingQuality = 'high';
+    for (const p of items.filter((i): i is Picture => i.type === 'picture')) {
+      const [x0, y0, x1, y1] = p.box;
+      const image = this.image(p.src);
+      if (image) ctx.drawImage(image, x0, y0, x1 - x0, y1 - y0);
+      else {
+        ctx.fillStyle = this.colors().rule;
+        ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      }
+    }
     for (const marker of [true, false]) {
-      for (const s of strokes) {
-        if (s.opacity < 1 !== marker) continue;
+      for (const s of items) {
+        if (s.type !== 'stroke' || s.opacity < 1 !== marker) continue;
         let path = this.paths.get(s);
         if (!path) this.paths.set(s, (path = new Path2D(s.d)));
         ctx.globalAlpha = s.opacity;
@@ -712,14 +896,22 @@ export class InkEditor {
     if (!this.theme) {
       const style = getComputedStyle(document.documentElement);
       const get = (name: string) => style.getPropertyValue(`--${name}`).trim();
-      this.theme = { bg: get('bg'), paper: get('paper'), rule: get('rule'), muted: get('muted'), accent: get('accent') };
+      this.theme = {
+        bg: get('bg'),
+        paper: get('paper'),
+        rule: get('rule'),
+        dot: get('dot'),
+        muted: get('muted'),
+        accent: get('accent'),
+        ...(this.pdf ? LIGHT : {}),
+      };
     }
     return this.theme;
   }
 
   private shade(color: string) {
     let shade = this.shades.get(color);
-    if (!shade) this.shades.set(color, (shade = displayColor(color, this.dark.matches)));
+    if (!shade) this.shades.set(color, (shade = displayColor(color, this.dark.matches && !this.pdf)));
     return shade;
   }
 }

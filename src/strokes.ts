@@ -3,6 +3,8 @@ import { getStroke, type StrokeOptions } from 'perfect-freehand';
 /** Page width in page units. The page scales to fit the screen, so a note looks the same on every device. */
 export const PAGE_WIDTH = 1000;
 export const LINE_GAP = 40;
+/** Gap between the pages of a PDF, in page units. */
+export const PDF_GAP = 24;
 /** Opacity of highlighter ink. */
 export const HIGHLIGHT = 0.4;
 export const BLACK = '#1a1a1a';
@@ -10,8 +12,11 @@ export const BLACK = '#1a1a1a';
 export type Point = [x: number, y: number, pressure: number];
 export type Box = [x0: number, y0: number, x1: number, y1: number];
 export type Brush = 'fountain' | 'ballpoint' | 'highlighter';
+export type Paper = 'lined' | 'grid' | 'dotted' | 'blank';
+export const PAPERS: Paper[] = ['lined', 'grid', 'dotted', 'blank'];
 
 export interface Stroke {
+  type: 'stroke';
   color: string;
   /** Below 1 for highlighter, which is drawn under the ink. */
   opacity: number;
@@ -20,6 +25,24 @@ export interface Stroke {
   /** Outline polygon as flat x,y pairs, for hit tests. */
   poly: number[];
   box: Box;
+}
+
+/** A photo or screenshot on the page. */
+export interface Picture {
+  type: 'picture';
+  /** The image file, in attachments/. */
+  src: string;
+  box: Box;
+}
+
+export type Item = Stroke | Picture;
+
+/** Everything a handwritten note holds. */
+export interface Page {
+  paper: Paper;
+  /** A PDF the note is written on, in attachments/. Its pages are stacked at the top of the page. */
+  pdf: string | null;
+  items: Item[];
 }
 
 const BRUSHES: Record<Brush, StrokeOptions> = {
@@ -33,6 +56,8 @@ const BRUSHES: Record<Brush, StrokeOptions> = {
 const NUMBER = /-?\d+(?:\.\d+)?/g;
 const SAFE_PATH = /^[MQTZ\d\s.,-]+$/;
 const SAFE_COLOR = /^#[0-9a-f]{3,8}$/i;
+const SAFE_IMAGE = /^attachments\/[\w-]+\.(png|jpe?g|webp|gif)$/i;
+const SAFE_PDF = /^attachments\/[\w-]+\.pdf$/i;
 const round = (n: number) => +n.toFixed(2);
 
 /**
@@ -54,14 +79,20 @@ export function outline(points: Point[], brush: Brush, size: number, { pressure 
 
 export function makeStroke(color: string, d: string, opacity = 1): Stroke {
   const poly = (d.match(NUMBER) ?? []).map(Number);
-  return { color, opacity, d, poly, box: boxOf(poly) };
+  return { type: 'stroke', color, opacity, d, poly, box: boxOf(poly) };
 }
 
-/** The stroke scaled by k, then moved by (tx, ty). Every number in the path is an absolute x or y, in turn. */
-export function transformed(s: Stroke, k: number, tx: number, ty: number): Stroke {
+export const picture = (src: string, box: Box): Picture => ({ type: 'picture', src, box: box.map(round) as Box });
+
+/** The item scaled by k, then moved by (tx, ty). Every number in a stroke's path is an absolute x or y, in turn. */
+export function transformed(item: Item, k: number, tx: number, ty: number): Item {
+  if (item.type === 'picture') {
+    const [x0, y0, x1, y1] = item.box;
+    return picture(item.src, [x0 * k + tx, y0 * k + ty, x1 * k + tx, y1 * k + ty]);
+  }
   let i = 0;
-  const d = s.d.replace(NUMBER, (n) => String(round(+n * k + (i++ % 2 ? ty : tx))));
-  return makeStroke(s.color, d, s.opacity);
+  const d = item.d.replace(NUMBER, (n) => String(round(+n * k + (i++ % 2 ? ty : tx))));
+  return makeStroke(item.color, d, item.opacity);
 }
 
 /** Bounding box of flat x,y pairs. */
@@ -104,13 +135,18 @@ export function hits({ poly, box }: Stroke, x: number, y: number, r: number): bo
   return inside(poly, x, y);
 }
 
-/** Is most of the stroke inside the lasso (flat x,y pairs)? */
-export function lassoed({ poly }: Stroke, lasso: number[]): boolean {
-  const n = poly.length / 2;
+/** Is most of the item inside the lasso (flat x,y pairs)? */
+export function lassoed(item: Item, lasso: number[]): boolean {
+  let points = item.type === 'stroke' ? item.poly : [];
+  if (item.type === 'picture') {
+    const [x0, y0, x1, y1] = item.box;
+    points = [x0, y0, x1, y0, x1, y1, x0, y1, (x0 + x1) / 2, (y0 + y1) / 2];
+  }
+  const n = points.length / 2;
   const step = Math.max(1, Math.floor(n / 24));
   let hit = 0;
   let total = 0;
-  for (let i = 0; i < n; i += step, total++) if (inside(lasso, poly[2 * i], poly[2 * i + 1])) hit++;
+  for (let i = 0; i < n; i += step, total++) if (inside(lasso, points[2 * i], points[2 * i + 1])) hit++;
   return total > 0 && hit * 2 >= total;
 }
 
@@ -125,31 +161,76 @@ export function segmentDistance2(px: number, py: number, ax: number, ay: number,
   return ex * ex + ey * ey;
 }
 
-/** A plain SVG that also shows on GitHub. Highlighter goes first so it sits under the ink, as on screen. */
-export function toSvg(strokes: Stroke[], height: number): string {
+/** Where each page of a PDF goes: full width, stacked top to bottom. `sizes` are each page's width and height. */
+export function layoutPdf(sizes: [width: number, height: number][]): { top: number; height: number }[] {
+  let top = 0;
+  return sizes.map(([w, h]) => {
+    const page = { top, height: (PAGE_WIDTH * h) / w };
+    top += page.height + PDF_GAP;
+    return page;
+  });
+}
+
+const RULE = 'stroke="#e6ebf2"';
+const PATTERNS: Record<Paper, string> = {
+  lined: `<line x1="0" y1="39.5" x2="40" y2="39.5" ${RULE}/>`,
+  grid: `<line x1="0" y1="39.5" x2="40" y2="39.5" ${RULE}/><line x1="39.5" y1="0" x2="39.5" y2="40" ${RULE}/>`,
+  dotted: '<circle cx="20" cy="20" r="1.5" fill="#c5ccd6"/>',
+  blank: '',
+};
+
+/**
+ * A plain SVG that also shows on GitHub: paper, then photos, then highlighter, then ink, as on screen.
+ * Photos and PDFs are files of their own in attachments/, so GitHub's preview leaves them out.
+ */
+export function toSvg({ paper, pdf, items }: Page, height: number): string {
+  const pictures = items.filter((i) => i.type === 'picture');
+  const strokes = items.filter((i) => i.type === 'stroke');
   const ordered = [...strokes.filter((s) => s.opacity < 1), ...strokes.filter((s) => s.opacity >= 1)];
-  const paths = ordered
-    .map((s) => `<path fill="${s.color}"${s.opacity < 1 ? ` fill-opacity="${s.opacity}"` : ''} d="${s.d}"/>\n`)
-    .join('');
+  // Dots sit where grid lines would cross, so the dotted pattern is shifted by half a square.
+  const pattern = PATTERNS[paper]
+    ? `<defs><pattern id="paper"${paper === 'dotted' ? ' x="-20" y="-20"' : ''} width="${LINE_GAP}" height="${LINE_GAP}" patternUnits="userSpaceOnUse">${PATTERNS[paper]}</pattern></defs>\n` +
+      `<rect width="100%" height="100%" fill="url(#paper)"/>\n`
+    : '';
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_WIDTH}" height="${height}" viewBox="0 0 ${PAGE_WIDTH} ${height}">\n` +
-    `<rect width="100%" height="100%" fill="#fff"/>\n${paths}</svg>\n`
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_WIDTH}" height="${height}" viewBox="0 0 ${PAGE_WIDTH} ${height}" data-paper="${paper}"${pdf ? ` data-pdf="${pdf}"` : ''}>\n` +
+    `<rect width="100%" height="100%" fill="#fff"/>\n${pattern}` +
+    pictures
+      .map(({ src, box: [x0, y0, x1, y1] }) => {
+        return `<image href="${src}" x="${x0}" y="${y0}" width="${round(x1 - x0)}" height="${round(y1 - y0)}" preserveAspectRatio="none"/>\n`;
+      })
+      .join('') +
+    ordered.map((s) => `<path fill="${s.color}"${s.opacity < 1 ? ` fill-opacity="${s.opacity}"` : ''} d="${s.d}"/>\n`).join('') +
+    '</svg>\n'
   );
 }
 
-const PATH_TAG = /<path\b([^>]*)>/g;
-const ATTRIBUTE = /([\w-]+)="([^"]*)"/g;
+const ATTRIBUTE = /([\w:-]+)="([^"]*)"/g;
+const attributes = (tag: string) => new Map([...tag.matchAll(ATTRIBUTE)].map(([, name, value]) => [name, value]));
 
-/** Reads the strokes back from a saved note, skipping anything that isn't a stroke this app drew. */
-export function fromSvg(svg: string): Stroke[] {
-  const strokes: Stroke[] = [];
-  for (const [, attributes] of svg.matchAll(PATH_TAG)) {
-    const a = new Map([...attributes.matchAll(ATTRIBUTE)].map(([, name, value]) => [name, value]));
+/** Reads a saved note back, skipping anything this app didn't put there. */
+export function fromSvg(svg: string): Page {
+  const root = attributes(svg.match(/<svg\b([^>]*)>/)?.[1] ?? '');
+  const paper = root.get('data-paper') as Paper;
+  const pdf = root.get('data-pdf') ?? '';
+  const items: Item[] = [];
+  for (const [, tag] of svg.matchAll(/<image\b([^>]*)>/g)) {
+    const a = attributes(tag);
+    const src = a.get('href') ?? a.get('xlink:href') ?? '';
+    const [x, y, w, h] = ['x', 'y', 'width', 'height'].map((name) => Number(a.get(name) ?? 0));
+    if (SAFE_IMAGE.test(src) && [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) items.push(picture(src, [x, y, x + w, y + h]));
+  }
+  for (const [, tag] of svg.matchAll(/<path\b([^>]*)>/g)) {
+    const a = attributes(tag);
     const d = a.get('d') ?? '';
     if (!SAFE_PATH.test(d)) continue;
     const fill = a.get('fill') ?? '';
     const opacity = Number(a.get('fill-opacity') ?? 1);
-    strokes.push(makeStroke(SAFE_COLOR.test(fill) ? fill : BLACK, d, opacity > 0 && opacity <= 1 ? opacity : 1));
+    items.push(makeStroke(SAFE_COLOR.test(fill) ? fill : BLACK, d, opacity > 0 && opacity <= 1 ? opacity : 1));
   }
-  return strokes;
+  // Notes from before paper styles were all lined.
+  return { paper: PAPERS.includes(paper) ? paper : 'lined', pdf: SAFE_PDF.test(pdf) ? pdf : null, items };
 }
+
+/** The photos and PDF a saved note uses. */
+export const attachmentsIn = (svg: string) => [...new Set(svg.match(/attachments\/[\w-]+\.\w+/g) ?? [])];

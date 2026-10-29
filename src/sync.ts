@@ -1,4 +1,5 @@
-import { conflictPath, isNotePath, type Note } from './notes';
+import { fromBase64 } from './base64';
+import { conflictPath, isBinary, isNotePath, type Note } from './notes';
 import { gitBlobSha } from './sha1';
 import { freePath, locked, type LocalStore } from './store';
 
@@ -7,7 +8,7 @@ export interface RemoteFile {
   sha: string;
 }
 
-/** A file to write, or delete when content is null. */
+/** A file to write, or delete when content is null. Binary files (see isBinary) are base64. */
 export interface Change {
   path: string;
   content: string | null;
@@ -24,7 +25,8 @@ export interface Remote {
   /** Current commit id, or null when the remote has no commits yet. */
   head(): Promise<string | null>;
   list(head: string): Promise<RemoteFile[]>;
-  read(sha: string): Promise<string>;
+  /** A file's content: text, or base64 for binary files. */
+  read(sha: string, binary: boolean): Promise<string>;
   /** Applies changes on top of parent and returns the new head. Throws StaleHeadError if parent is no longer the head. */
   commit(parent: string | null, changes: Change[], message: string): Promise<string>;
 }
@@ -68,7 +70,7 @@ async function pull(store: LocalStore, remote: Remote, head: string | null, resu
   const toFetch = files.filter((f) => known.get(f.path) !== f.sha);
 
   await eachLimit(toFetch, 6, async ({ path, sha }) => {
-    const content = await remote.read(sha);
+    const content = await remote.read(sha, isBinary(path));
     await locked(async () => {
       const local = await store.get(path);
       if (local?.sha === sha) return;
@@ -103,7 +105,7 @@ async function markPushed(store: LocalStore, sent: Note[], head: string) {
   await locked(async () => {
     for (const n of sent) {
       const cur = await store.get(n.path);
-      const sha = n.deleted ? null : gitBlobSha(n.content);
+      const sha = n.deleted ? null : blobSha(n.path, n.content);
       if (!cur) {
         // Deleted here while the push was in flight: delete it remotely next time.
         if (sha) await store.put({ ...n, sha, deleted: true, dirty: true });
@@ -118,6 +120,9 @@ async function markPushed(store: LocalStore, sent: Note[], head: string) {
     await store.setHead(head);
   });
 }
+
+/** The git id of a file as stored on the device: binary files are hashed as their bytes, not their base64. */
+export const blobSha = (path: string, content: string) => gitBlobSha(isBinary(path) ? fromBase64(content) : content);
 
 function message(notes: Note[]): string {
   if (notes.length > 1) return `Update ${notes.length} notes`;

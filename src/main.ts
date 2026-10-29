@@ -1,10 +1,28 @@
 import './style.css';
+import { fromBase64, toBase64 } from './base64';
 import { GitHubRemote } from './github';
 import { icon, type IconName } from './icons';
 import { InkEditor, displayColor, type Tool } from './ink';
-import { INBOX, KEEP, basename, conflictPath, dirname, extname, join, kindOf, newNote, stamp, title, type Kind } from './notes';
+import {
+  ATTACHMENTS,
+  INBOX,
+  KEEP,
+  basename,
+  conflictPath,
+  dirname,
+  extname,
+  isAttachment,
+  join,
+  kindOf,
+  newNote,
+  stamp,
+  title,
+  type Kind,
+} from './notes';
 import { isConfigured, loadSettings, loadTools, parseRepo, saveSettings, saveTools, type Settings } from './settings';
+import { gitBlobSha } from './sha1';
 import { freePath, idbStore, locked, type NoteInfo } from './store';
+import { LINE_GAP, attachmentsIn, toSvg, type Paper } from './strokes';
 import { sync, type SyncResult } from './sync';
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
@@ -37,10 +55,14 @@ let lastSync: Date | null = null;
 const textarea = document.createElement('textarea');
 textarea.className = 'text';
 textarea.placeholder = 'Start typing…';
-textarea.addEventListener('input', edited);
-const ink = new InkEditor(tools, (changed) => {
-  updateInkTools();
-  if (changed) edited();
+textarea.addEventListener('input', noteEdited);
+const ink = new InkEditor(tools, {
+  changed(edited) {
+    updateInkTools();
+    if (edited) noteEdited();
+  },
+  file: readFile,
+  problem: toast,
 });
 $('#editor').append(textarea, ink.el);
 
@@ -59,7 +81,7 @@ function show(next: Session, content: string) {
   renderDrawer();
 }
 
-function edited() {
+function noteEdited() {
   pending = true;
   renderStatus();
   clearTimeout(saveTimer);
@@ -151,16 +173,138 @@ async function deleteCurrent() {
   clearTimeout(saveTimer);
   saveTimer = 0;
   if (s.stored) {
+    let content = '';
     await locked(async () => {
       const cur = await store.get(s.path);
       if (!cur) return;
+      content = cur.content;
       if (cur.sha) await store.put({ ...cur, deleted: true, dirty: true, updated: Date.now() });
       else await store.remove(cur.path);
     });
+    await dropAttachments(content);
     scheduleSync();
   }
   await refresh();
   await startNew(s.kind, dirname(s.path));
+}
+
+/** Deletes the photos and PDF that only a just-deleted note used. */
+async function dropAttachments(content: string) {
+  const used = new Set(attachmentsIn(content));
+  if (!used.size) return;
+  for (const n of await store.list()) {
+    if (n.deleted || kindOf(n.path) !== 'ink') continue;
+    for (const a of attachmentsIn((await store.get(n.path))?.content ?? '')) used.delete(a);
+  }
+  await locked(async () => {
+    for (const path of used) {
+      const cur = await store.get(path);
+      if (cur?.sha) await store.put({ ...cur, deleted: true, dirty: true });
+      else if (cur) await store.remove(path);
+    }
+  });
+}
+
+/** A photo or PDF stored on this device, or null if it hasn't synced here yet. */
+async function readFile(path: string) {
+  const note = await store.get(path);
+  return note && !note.deleted ? fromBase64(note.content) : null;
+}
+
+/** Stores a photo or PDF in attachments/, named by its content so the same file is only stored once. */
+async function attach(bytes: Uint8Array, ext: string): Promise<string> {
+  const path = join(ATTACHMENTS, `${gitBlobSha(bytes).slice(0, 16)}.${ext}`);
+  await locked(async () => {
+    const cur = await store.get(path);
+    if (!cur || cur.deleted) await store.put({ ...newNote(path, toBase64(bytes)), sha: cur?.sha ?? null });
+  });
+  return path;
+}
+
+/** Photos are scaled to at most 2000 px and saved as JPEG. Small PNGs, like screenshots, stay PNG so text stays crisp. */
+async function preparePhoto(file: Blob) {
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const { width, height } = bitmap;
+  const scale = Math.min(1, 2000 / Math.max(width, height));
+  if (file.type === 'image/png' && scale === 1 && file.size < 1_500_000) {
+    bitmap.close();
+    return { bytes: new Uint8Array(await file.arrayBuffer()), ext: 'png', width, height };
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext('2d')!;
+  // JPEG has no transparency, so see-through parts become white rather than black.
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+  if (!blob) throw new Error('could not encode the image');
+  return { bytes: new Uint8Array(await blob.arrayBuffer()), ext: 'jpg', width: canvas.width, height: canvas.height };
+}
+
+async function insertPhoto(file: Blob) {
+  if (session.kind !== 'ink') return toast('Photos go on handwritten notes. Open one, then add the photo.');
+  try {
+    const photo = await preparePhoto(file);
+    ink.insertPicture(await attach(photo.bytes, photo.ext), photo.width, photo.height);
+  } catch {
+    toast('That image couldn’t be added. Try a JPEG or PNG.');
+  }
+}
+
+/** Starts a handwritten note on a PDF, named after it, in the current folder. */
+async function importPdf(file: File) {
+  // GitHub stores files up to 100 MB; base64 and the API's limits leave room for about half that.
+  if (file.size > 50_000_000) return toast('That PDF is over 50 MB, too big to sync through GitHub.');
+  await flush();
+  closeDrawer();
+  const src = await attach(new Uint8Array(await file.arrayBuffer()), 'pdf');
+  const name = file.name.replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]/g, '-').trim() || stamp(new Date());
+  const path = await locked(async () => {
+    const free = await freePath(store, join(dirname(session.path), `${name}.svg`));
+    await store.put(newNote(free, toSvg({ paper: 'blank', pdf: src, items: [] }, 2 * LINE_GAP)));
+    return free;
+  });
+  await refresh();
+  scheduleSync();
+  await open(path);
+}
+
+const isPdf = (file: File) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+
+/** A PDF of the open handwritten note: the share sheet on iPad (Save to Files, AirDrop, Mail), a download elsewhere. */
+async function exportCurrent() {
+  if (session.kind !== 'ink') return;
+  await flush();
+  toast('Making the PDF…');
+  try {
+    const { exportPdf, paperSize } = await import('./export');
+    const bytes = await exportPdf(title(session.path), ink.page(), readFile, paperSize(navigator.language));
+    const file = new File([bytes.slice()], `${title(session.path)}.pdf`, { type: 'application/pdf' });
+    if (matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] })) return share(file);
+    const url = URL.createObjectURL(file);
+    const a = el('a');
+    a.href = url;
+    a.download = file.name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    toast(`Downloaded ${file.name}`);
+  } catch (e) {
+    toast(`Couldn’t make the PDF: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+async function share(file: File) {
+  try {
+    await navigator.share({ files: [file] });
+    $('#toast').hidden = true;
+  } catch (e) {
+    // Safari only shares straight after a tap, and making the PDF can take longer than it allows: ask for another tap.
+    if (e instanceof DOMException && e.name === 'NotAllowedError') toast('Your PDF is ready.', { label: 'Share', run: () => void share(file) });
+    else if (!(e instanceof DOMException && e.name === 'AbortError')) toast('Sharing didn’t work. Try again.');
+  }
 }
 
 async function newFolder() {
@@ -171,7 +315,8 @@ async function newFolder() {
     .map((part) => part.trim().replace(/[\\:*?"<>|]/g, '-'))
     .filter(Boolean)
     .join('/');
-  if (!folder || folder.split('/').some((part) => part.startsWith('.'))) return toast('That name won’t work. Try another.');
+  const parts = folder.split('/');
+  if (!folder || parts.some((part) => part.startsWith('.')) || parts[0] === ATTACHMENTS) return toast('That name won’t work. Try another.');
   const path = join(folder, KEEP);
   await locked(async () => {
     if (!(await store.get(path))) await store.put(newNote(path, ''));
@@ -235,7 +380,8 @@ async function runSync() {
 }
 
 /** Brings the open note up to date with whatever sync changed. */
-async function reconcile({ conflicts }: SyncResult) {
+async function reconcile({ conflicts, changed }: SyncResult) {
+  if (changed.some(isAttachment)) ink.reloadFiles();
   const s = session;
   if (!s.stored || saveTimer || ink.busy) return;
   const conflict = conflicts.find((c) => c.path === s.path);
@@ -270,7 +416,7 @@ async function relink() {
 
 async function refresh() {
   const all = await store.list();
-  notes = all.filter((n) => !n.deleted);
+  notes = all.filter((n) => !n.deleted && !isAttachment(n.path));
   pending = all.some((n) => n.dirty);
   renderDrawer();
   renderStatus();
@@ -364,9 +510,17 @@ function iconButton(name: IconName, label: string) {
 }
 
 let toastTimer = 0;
-function toast(message: string) {
+function toast(message: string, action?: { label: string; run: () => void }) {
   const t = $('#toast');
-  t.textContent = message;
+  t.replaceChildren(message);
+  if (action) {
+    const b = el('button', 'toast-action', action.label);
+    b.onclick = () => {
+      t.hidden = true;
+      action.run();
+    };
+    t.append(b);
+  }
   t.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => (t.hidden = true), 5000);
@@ -486,9 +640,25 @@ function openNoteDialog() {
   const select = $<HTMLSelectElement>('#note-folder');
   select.replaceChildren(...folders().map((f) => new Option(folderLabel(f), f)));
   select.value = dirname(session.path);
+  const isInk = session.kind === 'ink';
+  $('#note-paper-row').hidden = !isInk;
+  $('#note-export').hidden = !isInk;
+  $<HTMLSelectElement>('#note-paper').value = ink.currentPaper;
   noteDialog.returnValue = '';
   noteDialog.showModal();
 }
+
+// Paper changes straight away, and new notes start on the last paper picked.
+$<HTMLSelectElement>('#note-paper').onchange = (e) => {
+  const paper = (e.target as HTMLSelectElement).value as Paper;
+  ink.setPaper(paper);
+  tools.paper = paper;
+  saveTools(tools);
+};
+$('#note-export').onclick = () => {
+  noteDialog.close();
+  void exportCurrent();
+};
 
 noteDialog.addEventListener('close', () => {
   if (noteDialog.returnValue !== 'save') return;
@@ -558,6 +728,33 @@ $('#new-ink').onclick = () => startNew('ink', dirname(session.path));
 $('#new-text').onclick = () => startNew('text', dirname(session.path));
 $('#new-folder').onclick = newFolder;
 $('#open-settings').onclick = openSettings;
+
+/** Runs `use` with the file picked in a hidden file input. */
+function picker(input: HTMLInputElement, use: (file: File) => void) {
+  input.onchange = () => {
+    const file = input.files?.[0];
+    input.value = '';
+    if (file) use(file);
+  };
+  return () => input.click();
+}
+$('#insert-photo').onclick = picker($<HTMLInputElement>('#photo-input'), (f) => void insertPhoto(f));
+$('#import-pdf').onclick = picker($<HTMLInputElement>('#pdf-input'), (f) => void importPdf(f));
+// Pasting or dropping a picture adds it to the page; dropping a PDF starts a note on it.
+document.addEventListener('paste', (e) => {
+  const image = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'));
+  if (!image || session.kind !== 'ink' || document.querySelector('dialog[open]')) return;
+  e.preventDefault();
+  void insertPhoto(image);
+});
+$('#editor').addEventListener('dragover', (e) => e.preventDefault());
+$('#editor').addEventListener('drop', (e) => {
+  const file = e.dataTransfer?.files[0];
+  if (!file) return;
+  e.preventDefault();
+  if (isPdf(file)) void importPdf(file);
+  else if (file.type.startsWith('image/')) void insertPhoto(file);
+});
 $('#status').onclick = () => {
   if (!isConfigured(settings)) return openSettings();
   toast(statusText()[1]);

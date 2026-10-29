@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { conflictPath, isNotePath, newNote, numbered, type Note } from './notes';
 import { gitBlobSha } from './sha1';
 import type { LocalStore } from './store';
-import { StaleHeadError, sync, type Change, type Remote } from './sync';
+import { StaleHeadError, blobSha, sync, type Change, type Remote } from './sync';
 
 /** In-memory stand-in for a GitHub repo. */
 class FakeRemote implements Remote {
@@ -17,7 +17,7 @@ class FakeRemote implements Remote {
     return this.current;
   }
   async list(head: string) {
-    return [...this.commits.get(head)!].map(([path, content]) => ({ path, sha: gitBlobSha(content) }));
+    return [...this.commits.get(head)!].map(([path, content]) => ({ path, sha: blobSha(path, content) }));
   }
   async read(sha: string) {
     return this.blobs.get(sha)!;
@@ -32,7 +32,7 @@ class FakeRemote implements Remote {
       if (content === null) files.delete(path);
       else {
         files.set(path, content);
-        this.blobs.set(gitBlobSha(content), content);
+        this.blobs.set(blobSha(path, content), content);
       }
     }
     const id = `c${++this.commitCount}`;
@@ -87,6 +87,10 @@ describe('gitBlobSha', () => {
     expect(gitBlobSha('x'.repeat(1000))).toBe('14c7dfdd4258dec5c0e9d2e919bd249bd674be1f');
     expect(gitBlobSha('héllo ✍\n')).toBe('ef988752051a73dd373dff33aaae51613d1da50f');
   });
+
+  it('hashes binary files by their bytes, not their base64', () => {
+    expect(blobSha('attachments/a.png', 'iVBORw0KGgoA/xA=')).toBe('fba2c5c6838e53104beb35ad2f4d8907a1874d69');
+  });
 });
 
 describe('paths', () => {
@@ -98,6 +102,14 @@ describe('paths', () => {
     expect(isNotePath('.github/workflows/x.md')).toBe(false);
     expect(isNotePath('inbox/photo.png')).toBe(false);
     expect(isNotePath('inbox/.DS_Store')).toBe(false);
+  });
+
+  it('manages photos and PDFs only in attachments/', () => {
+    expect(isNotePath('attachments/3f2a.jpg')).toBe(true);
+    expect(isNotePath('attachments/3f2a.pdf')).toBe(true);
+    expect(isNotePath('attachments/notes.md')).toBe(false);
+    expect(isNotePath('attachments/old/3f2a.jpg')).toBe(false);
+    expect(isNotePath('attachments/run.exe')).toBe(false);
   });
 
   it('builds numbered and conflict names', () => {
@@ -146,7 +158,7 @@ describe('sync', () => {
     const remote = new FakeRemote();
     const { store, contents } = memoryStore();
     await remote.edit('.github/workflows/ci.yml', 'x');
-    await remote.edit('photo.png', 'x');
+    await remote.edit('photo.png', 'iVBORw0KGgoA/xA=');
     await sync(store, remote, now);
     expect(contents()).toEqual({});
   });
@@ -251,6 +263,20 @@ describe('sync', () => {
     await sync(store, remote, now);
     expect(remote.files()).toEqual({});
     expect(notes.size).toBe(0);
+  });
+
+  it('syncs photos and PDFs as binary files', async () => {
+    const remote = new FakeRemote();
+    const ipad = memoryStore();
+    const laptop = memoryStore();
+    await write(ipad.store, 'attachments/fba2c5c6.png', 'iVBORw0KGgoA/xA=');
+    await write(ipad.store, 'inbox/a.svg', '<svg><image href="attachments/fba2c5c6.png"/></svg>');
+    await sync(ipad.store, remote, now);
+    expect(ipad.notes.get('attachments/fba2c5c6.png')).toMatchObject({ dirty: false, sha: 'fba2c5c6838e53104beb35ad2f4d8907a1874d69' });
+    await sync(laptop.store, remote, now);
+    expect(laptop.contents()).toEqual(ipad.contents());
+    // Nothing changed, so nothing is downloaded or pushed again.
+    expect(await sync(ipad.store, remote, now)).toEqual({ changed: [], conflicts: [], pushed: 0 });
   });
 
   it('converges two devices', async () => {

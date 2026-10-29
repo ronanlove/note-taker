@@ -44,8 +44,8 @@ export function sha1(bytes: Uint8Array): string {
 const encoder = new TextEncoder();
 
 /** The id git gives a file with this content, so we can tell whether our copy matches the remote one. */
-export function gitBlobSha(text: string): string {
-  const body = encoder.encode(text);
+export function gitBlobSha(content: string | Uint8Array): string {
+  const body = typeof content === 'string' ? encoder.encode(content) : content;
   const header = encoder.encode(`blob ${body.length}\0`);
   const all = new Uint8Array(header.length + body.length);
   all.set(header);

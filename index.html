@@ -27,6 +27,7 @@
         <button class="icon" id="tool-highlighter" data-icon="highlighter" aria-label="Highlighter"></button>
         <button class="icon" id="tool-eraser" data-icon="eraser" aria-label="Eraser"></button>
         <button class="icon" id="tool-lasso" data-icon="lasso" aria-label="Lasso: select to move, resize, recolor or delete"></button>
+        <button class="icon" id="insert-photo" data-icon="image" aria-label="Add a photo"></button>
         <span class="group" id="swatches"></span>
         <span class="group" id="sizes"></span>
       </div>
@@ -42,6 +43,7 @@
       <div class="folders" id="folders"></div>
       <footer>
         <span class="sync-text" id="sync-text"></span>
+        <button class="icon" id="import-pdf" data-icon="pdf" aria-label="Import a PDF to write on"></button>
         <button class="icon" id="new-folder" data-icon="folder" aria-label="New folder"></button>
         <button class="icon" id="open-settings" data-icon="settings" aria-label="Settings"></button>
       </footer>
@@ -51,8 +53,18 @@
       <form method="dialog">
         <label>Name <input id="note-name" required autocomplete="off" /></label>
         <label>Folder <select id="note-folder"></select></label>
+        <label id="note-paper-row">
+          Paper
+          <select id="note-paper">
+            <option value="lined">Lined</option>
+            <option value="grid">Grid</option>
+            <option value="dotted">Dotted</option>
+            <option value="blank">Blank</option>
+          </select>
+        </label>
         <menu>
           <button class="btn danger" id="note-delete" type="button">Delete</button>
+          <button class="btn" id="note-export" type="button">Export PDF</button>
           <span class="spacer"></span>
           <button class="btn" id="note-cancel" type="button">Cancel</button>
           <button class="btn primary" value="save">Save</button>
@@ -89,6 +101,8 @@
     </dialog>
 
     <div class="toast" id="toast" role="status" hidden></div>
+    <input type="file" id="photo-input" accept="image/*" hidden />
+    <input type="file" id="pdf-input" accept="application/pdf,.pdf" hidden />
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

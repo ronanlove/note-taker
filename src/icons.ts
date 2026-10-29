@@ -17,6 +17,8 @@ const paths = {
   lasso:
     '<path d="M7.5 17.2C4.3 16 2 13.7 2 11c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8c-.9 0-1.8-.1-2.6-.3"/><circle cx="7" cy="18" r="1.8"/><path d="M7 19.8c0 1.2-.6 1.9-1.6 2.2"/>',
   trash: '<path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
+  pdf: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M12 18v-6M9 15l3-3 3 3"/>',
 };
 
 export type IconName = keyof typeof paths;

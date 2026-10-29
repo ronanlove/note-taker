@@ -4,10 +4,17 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig({
   // GitHub Pages serves the app from /<repo-name>/; the deploy workflow sets this.
   base: process.env.BASE_PATH ?? '/',
+  // pdf.js is one big chunk, loaded only when a note has a PDF.
+  build: { chunkSizeWarningLimit: 600 },
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icon.svg', 'apple-touch-icon.png'],
+      workbox: {
+        // The PDF viewer's worker is an .mjs file of about 1.3 MB; cache it so PDFs open offline.
+        globPatterns: ['**/*.{js,mjs,css,html}'],
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+      },
       manifest: {
         name: 'Jot',
         short_name: 'Jot',

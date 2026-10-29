@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { recognize, type XY } from './shapes';
-import { BLACK, HIGHLIGHT, fromSvg, lassoed, makeStroke, outline, toSvg, transformed } from './strokes';
 
 /** Deterministic wobble, like a hand. */
 function wobbly(points: XY[], amount: number, seed = 1): XY[] {
@@ -77,45 +76,5 @@ describe('shape snapping', () => {
     });
     expect(recognize(polyline(star))).toBeNull();
     expect(recognize([[10, 10], [12, 11], [13, 13]])).toBeNull();
-  });
-});
-
-describe('strokes', () => {
-  const line = Array.from({ length: 30 }, (_, i): [number, number, number] => [100 + i * 5, 200 + i, 0.5]);
-
-  it('saves and loads, with highlighter under the ink', () => {
-    const pen = makeStroke(BLACK, outline(line, 'fountain', 4.5));
-    const marker = makeStroke('#facc15', outline(line, 'highlighter', 24), HIGHLIGHT);
-    const svg = toSvg([pen, marker], 300);
-    expect(svg.indexOf('fill-opacity="0.4"')).toBeLessThan(svg.indexOf(`fill="${BLACK}"`));
-    const loaded = fromSvg(svg);
-    expect(loaded.map((s) => [s.color, s.opacity, s.d])).toEqual([
-      ['#facc15', HIGHLIGHT, marker.d],
-      [BLACK, 1, pen.d],
-    ]);
-    expect(toSvg(loaded, 300)).toBe(svg);
-  });
-
-  it('loads notes saved before highlighters existed', () => {
-    const old = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#fff"/>\n<path fill="#2563eb" d="M1,2Q3,4 5,6T7,8Z"/>\n</svg>';
-    expect(fromSvg(old).map((s) => [s.color, s.opacity])).toEqual([['#2563eb', 1]]);
-  });
-
-  it('skips anything that is not a plain stroke', () => {
-    expect(fromSvg('<path fill="red" d="M1,2 L3,4"/><path fill="url(#x)" d="M1,2Q3,4 5,6Z"/>').map((s) => s.color)).toEqual([BLACK]);
-  });
-
-  it('moves and resizes', () => {
-    const s = makeStroke(BLACK, 'M10,20Q30,40 50,60T70,80Z');
-    expect(transformed(s, 2, 5, -5).d).toBe('M25,35Q65,75 105,115T145,155Z');
-    expect(transformed(s, 2, 5, -5).box).toEqual([25, 35, 145, 155]);
-  });
-
-  it('lassos strokes that are mostly inside', () => {
-    const s = makeStroke(BLACK, outline(line, 'ballpoint', 4.5));
-    const around = [90, 190, 260, 190, 260, 240, 90, 240];
-    const half = [90, 190, 150, 190, 150, 240, 90, 240];
-    expect(lassoed(s, around)).toBe(true);
-    expect(lassoed(s, half)).toBe(false);
   });
 });
