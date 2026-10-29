@@ -1,0 +1,471 @@
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfa;
+  --fg: #1d1d1f;
+  --muted: #86868b;
+  --line: #e5e5e2;
+  --hover: rgb(0 0 0 / 0.05);
+  --paper: #ffffff;
+  --rule: #e6ebf2;
+  --ok: #34a853;
+  --warn: #e3a008;
+  --danger: #d93025;
+  --accent: #2563eb;
+  /* Ink colors as displayed. Files always store the light-mode colors. */
+  --ink-1: #1a1a1a;
+  --ink-2: #2563eb;
+  --ink-3: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161617;
+    --fg: #ececec;
+    --muted: #8d8d92;
+    --line: #2a2a2c;
+    --hover: rgb(255 255 255 / 0.07);
+    --paper: #1c1c1e;
+    --rule: #2a2f37;
+    --ink-1: #ececec;
+    --ink-2: #6f9bff;
+    --ink-3: #ff6b6b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* ---------- Header */
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+
+.icon svg,
+.note svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon[aria-pressed='true'] {
+  background: var(--hover);
+}
+
+.icon:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .icon:not(:disabled):hover,
+  .note:hover,
+  .folder-name:hover {
+    background: var(--hover);
+  }
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  padding: 0 8px;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.title .folder {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.inktools {
+  display: flex;
+  align-items: center;
+}
+
+#swatches {
+  display: flex;
+}
+
+.swatch {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 40px;
+}
+
+.swatch::after {
+  content: '';
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.swatch[aria-pressed='true']::after {
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 3.5px var(--c);
+}
+
+/* On phones the ink tools get their own row. */
+@media (max-width: 560px) {
+  .inktools {
+    order: 1;
+    flex-basis: 100%;
+    justify-content: center;
+  }
+}
+
+.status {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 40px;
+}
+
+.status::after {
+  content: '';
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.status[data-state='synced']::after {
+  background: var(--ok);
+  opacity: 0.6;
+}
+
+.status[data-state='pending']::after {
+  background: var(--warn);
+}
+
+.status[data-state='syncing']::after {
+  background: var(--accent);
+  animation: pulse 0.8s ease-in-out infinite alternate;
+}
+
+.status[data-state='error']::after {
+  background: var(--danger);
+}
+
+.status[data-state='offline']::after,
+.status[data-state='local']::after {
+  border: 1.5px solid var(--muted);
+}
+
+@keyframes pulse {
+  to {
+    opacity: 0.2;
+  }
+}
+
+/* ---------- Editors */
+
+main {
+  flex: 1;
+  min-height: 0;
+}
+
+.text {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Centered column of text, with room to scroll the last line up from the keyboard. */
+  padding: 24px max(20px, calc((100% - 44rem) / 2)) 40vh;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  /* 16px or more stops iOS from zooming in on focus. */
+  font: 17px/1.65 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.ink {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.ink svg {
+  display: block;
+  width: 100%;
+  max-width: 62rem;
+  margin: 0 auto;
+  background: var(--paper);
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+
+.ink .rule {
+  stroke: var(--rule);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.ink path[fill='#1a1a1a'] {
+  fill: var(--ink-1);
+}
+.ink path[fill='#2563eb'] {
+  fill: var(--ink-2);
+}
+.ink path[fill='#dc2626'] {
+  fill: var(--ink-3);
+}
+
+/* ---------- Drawer */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: rgb(0 0 0 / 0.25);
+}
+
+.drawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, 86vw);
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+}
+
+.drawer.open {
+  transform: none;
+}
+
+.folders {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.folder-head {
+  display: flex;
+  align-items: center;
+}
+
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  text-align: left;
+  font-weight: 600;
+}
+
+.count {
+  margin-left: 8px;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 14px;
+}
+
+.notes {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px 7px 16px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.note svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.note[aria-current='true'] {
+  background: var(--hover);
+  font-weight: 600;
+}
+
+.empty {
+  padding: 4px 16px 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.drawer footer {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.sync-text {
+  flex: 1;
+  min-width: 0;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---------- Dialogs */
+
+dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.3);
+}
+
+dialog h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+input,
+select {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  color: var(--fg);
+  font: inherit;
+  font-size: 16px;
+}
+
+.hint {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.hint:empty {
+  display: none;
+}
+
+menu {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.btn {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.btn.primary {
+  border-color: transparent;
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.btn.danger {
+  color: var(--danger);
+}
+
+.toast {
+  position: fixed;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  left: 50%;
+  z-index: 20;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  transform: translateX(-50%);
+  border-radius: 10px;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 14px;
+}
