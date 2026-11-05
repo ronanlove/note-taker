@@ -83,6 +83,7 @@ function show(next: Session, content: string) {
 
 function noteEdited() {
   pending = true;
+  lastEdit = Date.now();
   renderStatus();
   clearTimeout(saveTimer);
   saveTimer = window.setTimeout(save, 600);
@@ -123,7 +124,8 @@ async function save() {
     await refresh();
     if (s === session) renderHeader();
   }
-  scheduleSync();
+  // Edits wait for a quiet spell so writing isn't interrupted and the repo gets one commit per session, not per pause.
+  scheduleSync(EDIT_SYNC_DELAY);
 }
 
 async function open(path: string) {
@@ -331,6 +333,9 @@ async function newFolder() {
 let syncing: Promise<void> | null = null;
 let again = false;
 let syncTimer = 0;
+/** How long to wait after the last edit before syncing. Leaving the app syncs right away regardless. */
+const EDIT_SYNC_DELAY = 2 * 60_000;
+let lastEdit = 0;
 
 function scheduleSync(delay = 3000) {
   clearTimeout(syncTimer);
@@ -784,7 +789,8 @@ window.addEventListener('offline', () => {
   renderStatus();
 });
 setInterval(() => {
-  if (document.visibilityState === 'visible') void syncNow();
+  // Only pull in the background when you're not mid-writing.
+  if (document.visibilityState === 'visible' && Date.now() - lastEdit > EDIT_SYNC_DELAY) void syncNow();
 }, 60_000);
 
 async function start() {
