@@ -47,8 +47,8 @@ export interface Page {
 
 const BRUSHES: Record<Brush, StrokeOptions> = {
   // Width follows pressure.
-  fountain: { thinning: 0.5, smoothing: 0.6, streamline: 0.45 },
-  ballpoint: { thinning: 0, smoothing: 0.6, streamline: 0.45 },
+  fountain: { thinning: 0.4, smoothing: 0.7, streamline: 0.55 },
+  ballpoint: { thinning: 0, smoothing: 0.7, streamline: 0.55 },
   // Flat ends, and steadier than a pen.
   highlighter: { thinning: 0, smoothing: 0.7, streamline: 0.6, start: { cap: false }, end: { cap: false } },
 };
@@ -68,13 +68,34 @@ export function outline(points: Point[], brush: Brush, size: number, { pressure 
   const options: StrokeOptions = exact
     ? { ...BRUSHES[brush], size, thinning: 0, smoothing: 0.5, streamline: 0, last: true }
     : { ...BRUSHES[brush], size, simulatePressure: !pressure, last };
-  const pts = getStroke(points, options);
+  const pts = getStroke(exact ? points : tidy(points, pressure), options);
   if (pts.length < 4) return '';
   // Smooth closed outline: quadratic curves through the midpoints of the outline points.
   const mid = (a: number[], b: number[]) => `${round((a[0] + b[0]) / 2)},${round((a[1] + b[1]) / 2)}`;
   let d = `M${round(pts[0][0])},${round(pts[0][1])}Q${round(pts[1][0])},${round(pts[1][1])} ${mid(pts[1], pts[2])}T`;
   for (let i = 2; i < pts.length - 1; i++) d += mid(pts[i], pts[i + 1]) + ' ';
   return d.trimEnd() + 'Z';
+}
+
+/** Points closer than this (in page units) are dropped: the Pencil samples so densely that they only add jitter. */
+const MIN_GAP = 0.75;
+/** How much each pressure reading counts against the running average (lower is smoother). */
+const PRESSURE_EASE = 0.35;
+
+/** Thins out near-duplicate points and smooths pen pressure, so stroke edges come out clean instead of grainy. */
+export function tidy(points: Point[], pressure: boolean): Point[] {
+  if (points.length < 3) return points;
+  const out: Point[] = [points[0]];
+  let p = points[0][2];
+  for (let i = 1; i < points.length; i++) {
+    const [x, y, raw] = points[i];
+    p = pressure ? p + (raw - p) * PRESSURE_EASE : raw;
+    const prev = out[out.length - 1];
+    const isLast = i === points.length - 1;
+    if (!isLast && Math.hypot(x - prev[0], y - prev[1]) < MIN_GAP) continue;
+    out.push([x, y, p]);
+  }
+  return out;
 }
 
 export function makeStroke(color: string, d: string, opacity = 1): Stroke {
