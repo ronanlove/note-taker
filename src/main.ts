@@ -73,6 +73,7 @@ function show(next: Session, content: string) {
   textarea.hidden = isInk;
   ink.el.hidden = !isInk;
   $('#inktools').hidden = !isInk;
+  $('#history').hidden = !isInk;
   if (isInk) ink.load(content, same);
   else textarea.value = content;
   expanded.add(dirname(next.path));
@@ -595,6 +596,36 @@ $('#sizes').append(...sizes);
 
 $('#undo').onclick = () => ink.undo();
 $('#redo').onclick = () => ink.redo();
+
+/**
+ * Safari on iPad holds back a click when taps come quickly, in case they turn into a double tap, so rapid taps on
+ * undo or the tools got dropped. These buttons act on pointerup instead, and the click Safari sends afterwards is ignored.
+ */
+function fastTaps(container: HTMLElement) {
+  let down: HTMLButtonElement | null = null;
+  const buttonAt = (e: Event) => (e.target as Element).closest<HTMLButtonElement>('button');
+  container.addEventListener('pointerdown', (e) => {
+    down = e.pointerType === 'mouse' ? null : buttonAt(e);
+  });
+  container.addEventListener('pointerup', (e) => {
+    const b = buttonAt(e);
+    if (!b || b !== down || b.disabled || b.id === 'insert-photo') return;
+    down = null;
+    b.click();
+    // The trusted click that follows the tap is a repeat of this one.
+    const skip = (c: MouseEvent) => {
+      if (c.isTrusted && buttonAt(c) === b) {
+        c.stopImmediatePropagation();
+        c.preventDefault();
+      }
+    };
+    container.addEventListener('click', skip, { capture: true, once: true });
+    setTimeout(() => container.removeEventListener('click', skip, { capture: true }), 500);
+  });
+  container.addEventListener('pointercancel', () => (down = null));
+}
+fastTaps($('#history'));
+fastTaps($('#inktools'));
 
 const dark = matchMedia('(prefers-color-scheme: dark)');
 dark.addEventListener('change', updateInkTools);

@@ -117,7 +117,9 @@ a {
 }
 
 .title {
-  flex: 1;
+  /* Sized to its text so undo and redo sit right beside it; the auto margin pushes the rest of the bar right. */
+  flex: 0 1 auto;
+  margin-right: auto;
   min-width: 0;
   padding: 0 8px;
   text-align: left;
@@ -130,6 +132,21 @@ a {
 .title .folder {
   color: var(--muted);
   font-weight: 400;
+}
+
+.title:has(+ .history:not([hidden])) {
+  margin-right: 0;
+}
+
+.history {
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-right: auto;
+}
+
+.history[hidden] {
+  display: none;
 }
 
 .inktools,
